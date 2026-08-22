@@ -19,4 +19,9 @@ export const api = {
       body: JSON.stringify(payload),
     }).then(handle),
   retryRequest: (id) => fetch(`${BASE_URL}/api/requests/${id}/retry`, { method: "POST" }).then(handle),
+  syncRequest: (id) => fetch(`${BASE_URL}/api/requests/${id}/sync`, { method: "POST" }).then(handle),
+  integrationStatus: () => fetch(`${BASE_URL}/api/notion/status`).then(handle),
+  validateNotion: () => fetch(`${BASE_URL}/api/notion/validate`, { method: "POST" }).then(handle),
+  setupNotion: () => fetch(`${BASE_URL}/api/notion/setup`, { method: "POST" }).then(handle),
+  syncNotion: () => fetch(`${BASE_URL}/api/notion/sync`, { method: "POST" }).then(handle),
 };

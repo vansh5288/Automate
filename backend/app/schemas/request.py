@@ -43,6 +43,10 @@ class RequestDetail(BaseModel):
     approver: str
     created_at: str
     updated_at: str
+    notion_page_id: str = ""
+    notion_approval_page_id: str = ""
+    notion_url: str = ""
+    external_action_id: str = ""
 
     class Config:
         from_attributes = True

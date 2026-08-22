@@ -10,6 +10,8 @@ from app.config import get_settings
 from app.database import init_db
 from app.routes import requests as requests_routes
 from app.routes import webhooks as webhooks_routes
+from app.routes import integrations as integrations_routes
+from app.routes import notion as notion_routes
 from app.workers.notion_poller import poll_loop
 
 settings = get_settings()
@@ -50,3 +52,5 @@ def health():
 
 app.include_router(requests_routes.router)
 app.include_router(webhooks_routes.router)
+app.include_router(integrations_routes.router)
+app.include_router(notion_routes.router)

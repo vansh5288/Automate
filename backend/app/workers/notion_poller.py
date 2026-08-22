@@ -30,15 +30,16 @@ async def poll_loop():
         await asyncio.sleep(settings.notion_poll_interval_seconds)
 
 
-def _poll_once():
+def poll_once(request_id: str | None = None):
     if notion_service.DEV_MODE:
-        return  # nothing to poll against without a real Notion connection
+        return 0  # nothing to poll against without a real Notion connection
 
     decisions = notion_service.get_pending_approval_decisions()
     if not decisions:
-        return
+        return 0
 
     db = SessionLocal()
+    synced = 0
     try:
         for page in decisions:
             props = page.get("properties", {})
@@ -50,14 +51,19 @@ def _poll_once():
                 continue
 
             req = db.query(PurchaseRequest).filter(PurchaseRequest.id == request_id).first()
-            if not req or req.status.value != "PENDING_APPROVAL":
+            if not req or (request_id and request_id != req.id) or req.status.value != "PENDING_APPROVAL":
                 continue
 
             procurement_service.apply_human_decision(
                 db, req, _STATUS_MAP[status_name], approver=approver,
             )
+            synced += 1
     finally:
         db.close()
+    return synced
+
+
+    _poll_once = poll_once
 
 
 def _extract_title(prop) -> str:

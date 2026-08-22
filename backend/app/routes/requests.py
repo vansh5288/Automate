@@ -6,6 +6,7 @@ from app.models.request import PurchaseRequest, RequestStatus
 from app.models.run_log import RunLog
 from app.schemas.request import PurchaseRequestIn, PurchaseRequestOut, RequestDetail
 from app.services import procurement_service
+from app.workers.notion_poller import poll_once
 
 router = APIRouter(prefix="/api/requests", tags=["requests"])
 
@@ -60,6 +61,10 @@ def get_request(request_id: str, db: Session = Depends(get_db)):
         approver=r.approver,
         created_at=r.created_at.isoformat(),
         updated_at=r.updated_at.isoformat(),
+        notion_page_id=r.notion_page_id,
+        notion_approval_page_id=r.notion_approval_page_id,
+        notion_url=f"https://www.notion.so/{r.notion_approval_page_id.replace('-', '')}" if r.notion_approval_page_id else "",
+        external_action_id=r.external_action_id,
     )
 
 
@@ -98,3 +103,13 @@ def retry_request(request_id: str, db: Session = Depends(get_db)):
     if r.status not in (RequestStatus.FAILED, RequestStatus.NEEDS_REVIEW, RequestStatus.ACTION_FAILED):
         raise HTTPException(status_code=400, detail=f"Request in status {r.status.value} is not retryable")
     return procurement_service._process_request(db, r)  # noqa: SLF001 - intentional reuse
+
+
+@router.post("/{request_id}/sync")
+def sync_request(request_id: str, db: Session = Depends(get_db)):
+    if not db.query(PurchaseRequest).filter(PurchaseRequest.id == request_id).first():
+        raise HTTPException(status_code=404, detail="Request not found")
+    poll_once(request_id=request_id)
+    db.expire_all()
+    r = db.query(PurchaseRequest).filter(PurchaseRequest.id == request_id).first()
+    return {"request_id": request_id, "status": r.status.value, "message": "Synchronization completed."}

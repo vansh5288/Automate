@@ -65,6 +65,25 @@ See `docs/architecture.md` for the full request lifecycle diagram.
    ```
 5. Copy the three printed database IDs into `.env` (`NOTION_REQUESTS_DATABASE_ID`, `NOTION_APPROVALS_DATABASE_ID`, `NOTION_RUN_LOG_DATABASE_ID`).
 
+### How to connect Notion
+
+1. Create an internal integration at `https://www.notion.so/my-integrations` and copy its secret to `NOTION_TOKEN`.
+2. Create a parent page in the target workspace. Open the page menu, choose **Add connections**, and select the ProcureFlow integration.
+3. Set `NOTION_PARENT_PAGE_ID` in `.env` (or pass `--parent-page-id` to the setup command).
+4. From the repository root, run the setup command below. It loads `.env`, verifies the token, and creates the three databases with the schema used by the backend.
+5. Copy the three printed database IDs into `.env`, then restart the backend.
+6. Open **Integrations** in the frontend and use **Test Connection / Validate Schema**.
+7. Submit a high-value request, open its Approval Queue item in Notion, change `Status` from `Pending` to `Approved` or `Rejected`, and wait for the poller (or use **Sync Now**).
+
+PowerShell setup command:
+
+```powershell
+cd backend
+.\venv\Scripts\python.exe ..\scripts\setup_notion.py --parent-page-id <page_id>
+```
+
+If the integration is configured but cannot access Notion, the diagnostics endpoint reports the corrective action. Share the parent page and all created databases with the integration; do not remove the token to hide a permission failure.
+
 Without these set, the backend runs in Notion **DEV_MODE**: it logs what it would have written instead of calling the API, so you can still develop and test the rest of the pipeline. Details in `docs/hackathon-compliance.md`.
 
 ## Environment Variables
@@ -90,9 +109,18 @@ npm install
 
 ## Running Backend
 
+PowerShell (Windows):
+
+```powershell
+cd backend
+.\venv\Scripts\python.exe -m uvicorn app.main:app --reload --port 8000
+```
+
+macOS/Linux (after activating the virtual environment):
+
 ```bash
 cd backend
-uvicorn app.main:app --reload --port 8000
+python -m uvicorn app.main:app --reload --port 8000
 ```
 Visit `http://localhost:8000/health` and `http://localhost:8000/docs` (auto-generated API docs).
 
@@ -136,7 +164,13 @@ Interactive docs at `/docs` (Swagger) once the backend is running. Core endpoint
 | GET | `/api/requests/{id}` | Full detail for one request |
 | GET | `/api/requests/{id}/runs` | Run Log history for one request |
 | POST | `/api/requests/{id}/retry` | Re-run processing after a failure |
+| POST | `/api/requests/{id}/sync` | Poll Notion and synchronize one request |
 | POST | `/api/webhooks/purchase-request` | Webhook trigger (same pipeline as above) |
+| GET | `/api/integrations/status` | Safe AI/Notion/poller integration diagnostics |
+| POST | `/api/integrations/notion/validate` | Test Notion access and required properties |
+| GET | `/api/notion/status` | Real Notion authentication and database status |
+| POST | `/api/notion/setup` | Discover or create the ProcureFlow Notion hierarchy |
+| POST | `/api/notion/sync` | Poll all pending Notion approvals immediately |
 
 ## Failure Handling
 

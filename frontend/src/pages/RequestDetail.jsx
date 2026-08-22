@@ -26,6 +26,15 @@ export default function RequestDetail() {
     }
   };
 
+  const sync = async () => {
+    try {
+      await api.syncRequest(id);
+      load();
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
   if (error) return <div className="empty">{error}</div>;
   if (!req) return <div className="empty">Loading…</div>;
 
@@ -35,7 +44,11 @@ export default function RequestDetail() {
     <div>
       <Link to="/" className="back-link">← Back to dashboard</Link>
       <h1>{req.request_id}</h1>
-      <p className="subtitle"><StatusBadge status={req.status} /> {retryable && (
+      <p className="subtitle"><StatusBadge status={req.status} /> {req.notion_url && (
+        <a className="secondary" href={req.notion_url} target="_blank" rel="noreferrer">Open in Notion</a>
+      )} {req.status === "PENDING_APPROVAL" && (
+        <button className="secondary" onClick={sync}>Sync Now</button>
+      )} {retryable && (
         <button className="primary" style={{ marginLeft: 12, padding: "4px 12px", fontSize: 12, marginTop: 0 }} onClick={retry}>
           Retry
         </button>

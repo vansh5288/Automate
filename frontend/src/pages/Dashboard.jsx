@@ -8,8 +8,11 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
+  const load = () => api.listRequests().then(setRequests).catch((e) => setError(e.message)).finally(() => setLoading(false));
   useEffect(() => {
-    api.listRequests().then(setRequests).catch((e) => setError(e.message)).finally(() => setLoading(false));
+    load();
+    const timer = setInterval(load, 10000);
+    return () => clearInterval(timer);
   }, []);
 
   const counts = requests.reduce((acc, r) => {

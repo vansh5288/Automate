@@ -17,7 +17,11 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
+from dotenv import load_dotenv  # noqa: E402
 from notion_client import Client  # noqa: E402
+from app.services.notion_service import setup_procureflow  # noqa: E402
+
+load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
 
 def build_client(token: str) -> Client:
@@ -124,18 +128,11 @@ def main():
 
     client = build_client(token)
 
-    print("Creating Purchase Requests database...")
-    requests_id = create_requests_db(client, args.parent_page_id)
-    print(f"  NOTION_REQUESTS_DATABASE_ID={requests_id}")
-
-    print("Creating Approval Queue database...")
-    approvals_id = create_approvals_db(client, args.parent_page_id)
-    print(f"  NOTION_APPROVALS_DATABASE_ID={approvals_id}")
-
-    print("Creating Run Log database...")
-    run_log_id = create_run_log_db(client, args.parent_page_id)
-    print(f"  NOTION_RUN_LOG_DATABASE_ID={run_log_id}")
-
+    result = setup_procureflow(args.parent_page_id)
+    print(f"ProcureFlow page: {result['procureflow_url'] or result['procureflow_page']}")
+    print(f"NOTION_REQUESTS_DATABASE_ID={result['purchase_requests_database']['id']}")
+    print(f"NOTION_APPROVALS_DATABASE_ID={result['approval_queue_database']['id']}")
+    print(f"NOTION_RUN_LOG_DATABASE_ID={result['run_log_database']['id']}")
     print("\nCopy the three IDs above into your .env file, then restart the backend.")
 
 
