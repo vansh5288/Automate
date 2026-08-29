@@ -20,6 +20,12 @@ export const api = {
     }).then(handle),
   retryRequest: (id) => fetch(`${BASE_URL}/api/requests/${id}/retry`, { method: "POST" }).then(handle),
   syncRequest: (id) => fetch(`${BASE_URL}/api/requests/${id}/sync`, { method: "POST" }).then(handle),
+  localDecide: (id, payload) =>
+    fetch(`${BASE_URL}/api/requests/${id}/decide`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }).then(handle),
   integrationStatus: () => fetch(`${BASE_URL}/api/notion/status`).then(handle),
   validateNotion: () => fetch(`${BASE_URL}/api/notion/validate`, { method: "POST" }).then(handle),
   setupNotion: () => fetch(`${BASE_URL}/api/notion/setup`, { method: "POST" }).then(handle),

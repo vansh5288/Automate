@@ -24,15 +24,15 @@ _STATUS_MAP = {
 async def poll_loop():
     while True:
         try:
-            await asyncio.to_thread(_poll_once)
+            await asyncio.to_thread(poll_once)
         except Exception:  # noqa: BLE001
             logger.exception("Notion poll iteration failed")
         await asyncio.sleep(settings.notion_poll_interval_seconds)
 
 
-def poll_once(request_id: str | None = None):
+def poll_once(request_id: str | None = None) -> int:
     if notion_service.DEV_MODE:
-        return 0  # nothing to poll against without a real Notion connection
+        return 0
 
     decisions = notion_service.get_pending_approval_decisions()
     if not decisions:
@@ -43,27 +43,32 @@ def poll_once(request_id: str | None = None):
     try:
         for page in decisions:
             props = page.get("properties", {})
-            request_id = _extract_title(props.get("Request ID"))
+            rid = _extract_rich_text(props.get("Request ID"))
+            if not rid:
+                # Fallback: title field may hold request ID in older schemas
+                rid = _extract_title(props.get("Name")) or _extract_title(props.get("Request ID"))
+
+            if request_id and rid != request_id:
+                continue
+
             status_name = _extract_select(props.get("Status"))
             approver = _extract_rich_text(props.get("Approver")) or "Notion Approver"
 
-            if not request_id or status_name not in _STATUS_MAP:
+            if not rid or status_name not in _STATUS_MAP:
                 continue
 
-            req = db.query(PurchaseRequest).filter(PurchaseRequest.id == request_id).first()
-            if not req or (request_id and request_id != req.id) or req.status.value != "PENDING_APPROVAL":
+            req = db.query(PurchaseRequest).filter(PurchaseRequest.id == rid).first()
+            if not req or req.status.value != "PENDING_APPROVAL":
                 continue
 
             procurement_service.apply_human_decision(
                 db, req, _STATUS_MAP[status_name], approver=approver,
             )
             synced += 1
+            logger.info("Synced Notion decision %s for request %s", status_name, rid)
     finally:
         db.close()
     return synced
-
-
-    _poll_once = poll_once
 
 
 def _extract_title(prop) -> str:

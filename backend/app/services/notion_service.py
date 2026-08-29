@@ -19,9 +19,23 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 procureflow_page_url = ""
 
-DEV_MODE = settings.demo_mode or not settings.notion_token
 
-if not DEV_MODE:
+def notion_is_configured() -> bool:
+    """True when token and all three database IDs are set."""
+    return bool(
+        settings.notion_token
+        and settings.notion_requests_database_id
+        and settings.notion_approvals_database_id
+        and settings.notion_run_log_database_id
+    )
+
+
+HAS_NOTION_TOKEN = bool(settings.notion_token)
+# DEV_MODE: skip Notion API writes when token or database IDs are missing.
+# DEMO_MODE does NOT disable Notion when fully configured.
+DEV_MODE = not notion_is_configured()
+
+if HAS_NOTION_TOKEN:
     from notion_client import Client
     from notion_client.errors import APIResponseError
 
@@ -30,8 +44,14 @@ else:
     _client = None
     APIResponseError = Exception  # type: ignore
     logger.warning(
-        "NOTION_TOKEN or database IDs not configured - running Notion service "
-        "in DEV_MODE (actions are logged locally, not sent to Notion)."
+        "NOTION_TOKEN not configured - Notion service in DEV_MODE "
+        "(actions logged locally, not sent to Notion)."
+    )
+
+if HAS_NOTION_TOKEN and DEV_MODE:
+    logger.warning(
+        "Notion database IDs not fully configured - Notion service in DEV_MODE. "
+        "Run scripts/setup_notion.py and add the printed IDs to .env."
     )
 
 
@@ -67,12 +87,19 @@ def _retryable():
 
 
 @_retryable()
-def _create_page(database_id: str, properties: dict) -> str:
+def _create_page(database_id: str, properties: dict) -> tuple[str, str]:
+    """Create a Notion page and return (page_id, page_url).
+    
+    In DEV_MODE, returns (fake_id, empty_url) to allow testing locally.
+    """
     if DEV_MODE:
+        fake_id = f"dev-page-{abs(hash(str(properties))) % 100000}"
         logger.info("[DEV_MODE] Would create Notion page in %s: %s", database_id, properties)
-        return f"dev-page-{abs(hash(str(properties))) % 100000}"
+        return (fake_id, "")  # No real URL in dev mode
     page = _client.pages.create(parent={"database_id": database_id}, properties=properties)
-    return page["id"]
+    page_id = page["id"]
+    page_url = page.get("url", "")  # Notion API returns the real public URL
+    return (page_id, page_url)
 
 
 @_retryable()
@@ -125,8 +152,11 @@ def _checkbox(value: bool) -> dict:
     return {"checkbox": bool(value)}
 
 
-def create_purchase_request_page(req) -> str:
-    """Create the master record in the Purchase Requests DB."""
+def create_purchase_request_page(req) -> tuple[str, str]:
+    """Create the master record in the Purchase Requests DB.
+    
+    Returns: (page_id, page_url)
+    """
     properties = {
         "Name": _title(req.id),
         "Request ID": _rich_text(req.id),
@@ -157,8 +187,11 @@ def update_purchase_request_status(page_id: str, status: str, approver: str = ""
     _update_page(page_id, properties)
 
 
-def create_approval_item(req) -> str:
-    """Create a row in the Approval Queue - only for requests needing a human."""
+def create_approval_item(req) -> tuple[str, str]:
+    """Create a row in the Approval Queue - only for requests needing a human.
+    
+    Returns: (page_id, page_url)
+    """
     properties = {
         "Name": _title(req.id),
         "Request ID": _rich_text(req.id),
@@ -185,7 +218,11 @@ def get_pending_approval_decisions() -> list:
     return _query_database(settings.notion_approvals_database_id, filter_)
 
 
-def create_run_log_entry(log) -> str:
+def create_run_log_entry(log) -> tuple[str, str]:
+    """Create a run log entry in the Run Log database.
+    
+    Returns: (page_id, page_url)
+    """
     properties = {
         "Run ID": _title(log.run_id),
         "Request ID": _rich_text(log.request_id),
@@ -196,6 +233,7 @@ def create_run_log_entry(log) -> str:
         "Reason": _rich_text(log.reason or ""),
         "Error": _rich_text(log.error or ""),
         "External Action ID": _rich_text(log.external_action_id or ""),
+        "Timestamp": _date(log.timestamp.isoformat() if log.timestamp else ""),
     }
     return _create_page(settings.notion_run_log_database_id, properties)
 
@@ -212,12 +250,23 @@ def _notion_error_message(exc: Exception) -> str:
 
 def integration_status() -> dict:
     """Return safe diagnostics without exposing tokens or API exceptions."""
+    demo_mode = settings.demo_mode
     result = {
-        "mode": "DEMO" if DEV_MODE else "REAL",
+        "mode": "REAL" if not DEV_MODE else "DEMO",
+        "demo_mode": demo_mode,
+        "notion_dev_mode": DEV_MODE,
+        "connection_state": "demo",  # demo | connected | error
         "token_configured": bool(settings.notion_token),
+        "parent_page_configured": bool(settings.notion_parent_page_id),
+        "databases_configured": bool(
+            settings.notion_requests_database_id
+            and settings.notion_approvals_database_id
+            and settings.notion_run_log_database_id
+        ),
         "connected": False,
         "database_access": False,
         "schema_valid": False,
+        "poller": "✓ Polling enabled" if not DEV_MODE else "- Demo mode (no polling)",
         "missing_properties": [],
         "invalid_properties": [],
         "databases": {
@@ -225,11 +274,35 @@ def integration_status() -> dict:
             "approval_queue": {"exists": False, "schema_valid": False},
             "run_log": {"exists": False, "schema_valid": False},
         },
-        "message": "Notion is not configured; using local demo mode." if DEV_MODE else "",
+        "message": "",
         "procureflow_url": procureflow_page_url,
     }
+
     if DEV_MODE:
+        if not settings.notion_token:
+            result["connection_state"] = "demo"
+            result["message"] = (
+                "🟡 Demo / Local Mode – Notion integration is not configured. "
+                "Approval is simulated locally. Set NOTION_TOKEN and run the setup script to enable real Notion."
+            )
+        elif not result["databases_configured"]:
+            result["connection_state"] = "error"
+            result["message"] = (
+                "🔴 Notion Configuration Error – NOTION_TOKEN is set but database IDs are missing. "
+                "Run: python scripts/setup_notion.py --parent-page-id <id> and copy the IDs to .env."
+            )
+        else:
+            result["connection_state"] = "demo"
+            result["message"] = "🟡 Demo / Local Mode – Notion credentials incomplete."
+        if demo_mode:
+            result["message"] += " DEMO_MODE=true: external procurement actions are simulated."
         return result
+
+    if not result["token_configured"]:
+        result["connection_state"] = "error"
+        result["message"] = "🔴 Notion Configuration Error – NOTION_TOKEN is not configured in .env"
+        return result
+
     try:
         _client.users.me()
         result["connected"] = True
@@ -239,27 +312,37 @@ def integration_status() -> dict:
             "run_log": settings.notion_run_log_database_id,
         }
         required = {
-            "purchase_requests": {"Request ID", "Status", "Employee", "Department"},
-            "approval_queue": {"Request ID", "Status", "Employee", "Purchase"},
+            "purchase_requests": {"Request ID", "Status", "Employee Name", "Department", "Name"},
+            "approval_queue": {"Request ID", "Status", "Employee", "Purchase", "Name"},
             "run_log": {"Run ID", "Request ID", "Event", "Status"},
         }
         for name, database_id in schemas.items():
             if not database_id:
-                result["missing_properties"].append(f"{name}: database is not configured")
+                result["missing_properties"].append(f"{name}: database ID is not configured in .env")
                 continue
             properties = _client.databases.retrieve(database_id=database_id).get("properties", {})
             result["databases"][name]["exists"] = True
             result["databases"][name]["schema_valid"] = all(prop in properties for prop in required[name])
             result["missing_properties"].extend(
-                f"{name}: {prop}" for prop in required[name] if prop not in properties
+                f"{name}: missing property '{prop}'" for prop in required[name] if prop not in properties
             )
         result["database_access"] = True
         result["schema_valid"] = not result["missing_properties"]
-        if not result["schema_valid"]:
-            result["message"] = "Notion is connected, but one or more database properties are missing."
+
+        if result["schema_valid"]:
+            result["connection_state"] = "connected"
+            suffix = " DEMO_MODE=true: external actions simulated; Notion approvals are real." if demo_mode else ""
+            result["message"] = f"🟢 Notion Connected – all databases accessible and schema valid.{suffix}"
+        else:
+            result["connection_state"] = "error"
+            result["message"] = (
+                f"🔴 Notion Configuration Error – schema mismatch. "
+                f"Re-run setup or fix: {', '.join(result['missing_properties'][:3])}"
+            )
         return result
     except Exception as exc:  # noqa: BLE001
-        result["message"] = _notion_error_message(exc)
+        result["connection_state"] = "error"
+        result["message"] = f"🔴 {_notion_error_message(exc)}"
         result["error_type"] = type(exc).__name__
         return result
 
@@ -309,18 +392,34 @@ def _database_schema(title: str) -> dict:
         }
     if title.endswith("Approval Queue"):
         return {
-            "Name": {"title": {}}, **common, "Status": {"select": {"options": [{"name": x} for x in ("Pending", "Approved", "Rejected", "Override", "Blocked")]}}, "Employee": {"rich_text": {}},
-            "Employee Email": {"email": {}}, "Department": {"rich_text": {}}, "Purchase": {"rich_text": {}},
-            "Quantity": {"number": {}}, "Amount": {"number": {}},
+            "Name": {"title": {}},
+            **common,
+            "Status": {"select": {"options": [{"name": x} for x in ("Pending", "Approved", "Rejected", "Override", "Blocked")]}},
+            "Employee": {"rich_text": {}},
+            "Employee Email": {"email": {}},
+            "Department": {"rich_text": {}},
+            "Purchase": {"rich_text": {}},
+            "Quantity": {"number": {}},
+            "Amount": {"number": {}},
             "Risk": {"select": {"options": [{"name": x} for x in ("Low", "Medium", "High")]}},
-            "AI Confidence": {"number": {}}, "Approver": {"rich_text": {}},
-            "Decision Reason": {"rich_text": {}}, "Decision At": {"date": {}}, "Created At": {"date": {}},
+            "AI Confidence": {"number": {}},
+            "Approver": {"rich_text": {}},
+            "Decision Reason": {"rich_text": {}},
+            "Decision At": {"date": {}},
+            "Created At": {"date": {}},
             "ProcureFlow Request URL": {"url": {}},
         }
+    # Run Log – must match create_run_log_entry() property names exactly
     return {
-        "Name": {"title": {}}, "Event ID": {"rich_text": {}}, "Request ID": {"rich_text": {}},
-        "Event Type": {"select": {"options": []}}, "Actor": {"rich_text": {}},
-        "Status": {"select": {"options": [{"name": x} for x in ("SUCCESS", "FAILURE", "INFO")]}}, "Reason": {"rich_text": {}}, "Error": {"rich_text": {}},
+        "Run ID": {"title": {}},
+        "Request ID": {"rich_text": {}},
+        "Event": {"select": {"options": []}},
+        "Status": {"select": {"options": [{"name": x} for x in ("SUCCESS", "FAILURE", "INFO")]}},
+        "Action": {"rich_text": {}},
+        "Actor": {"rich_text": {}},
+        "Reason": {"rich_text": {}},
+        "Error": {"rich_text": {}},
+        "External Action ID": {"rich_text": {}},
         "Timestamp": {"date": {}},
     }
 
@@ -333,21 +432,34 @@ def _create_database(parent_page_id: str, title: str) -> dict:
     )
 
 
+PROCUREFLOW_PAGE_TITLE = "ProcureFlow Control Center"
+
+
 def setup_procureflow(parent_page_id: str) -> dict:
     """Discover or create the ProcureFlow hierarchy without touching other pages."""
-    if DEV_MODE:
-        raise NotionServiceError("Real Notion setup requires NOTION_TOKEN and NOTION_PARENT_PAGE_ID.")
+    if not HAS_NOTION_TOKEN or _client is None:
+        raise NotionServiceError("Real Notion setup requires NOTION_TOKEN in .env.")
     try:
+        _client.users.me()
         _client.pages.retrieve(page_id=parent_page_id)
-        page = _search_exact("ProcureFlow", "page")
+        page = _search_exact(PROCUREFLOW_PAGE_TITLE, "page")
         if not page:
-            page = _client.pages.create(parent={"page_id": parent_page_id}, properties={"title": _title("ProcureFlow")})
+            page = _client.pages.create(
+                parent={"page_id": parent_page_id},
+                properties={"title": _title(PROCUREFLOW_PAGE_TITLE)},
+            )
         databases = {}
-        for suffix, key in (("Purchase Requests", "purchase_requests_database"), ("Approval Queue", "approval_queue_database"), ("Run Log", "run_log_database")):
+        for suffix, key in (
+            ("Purchase Requests", "purchase_requests_database"),
+            ("Approval Queue", "approval_queue_database"),
+            ("Run Log", "run_log_database"),
+        ):
             title = f"ProcureFlow - {suffix}"
             database = _search_exact(title, "database")
             if not database:
                 database = _create_database(page["id"], title)
+            # Verify we can read the database
+            _client.databases.retrieve(database_id=database["id"])
             databases[key] = {"id": database["id"], "url": database.get("url", "")}
         global procureflow_page_url
         settings.notion_requests_database_id = databases["purchase_requests_database"]["id"]
@@ -355,8 +467,15 @@ def setup_procureflow(parent_page_id: str) -> dict:
         settings.notion_run_log_database_id = databases["run_log_database"]["id"]
         procureflow_page_url = page.get("url", "")
         return {
-            "success": True, "workspace": "Game Player's Space", "procureflow_page": page["id"],
-            "procureflow_url": page.get("url", ""), **databases,
+            "success": True,
+            "procureflow_page": page["id"],
+            "procureflow_url": page.get("url", ""),
+            **databases,
+            "env_snippet": {
+                "NOTION_REQUESTS_DATABASE_ID": databases["purchase_requests_database"]["id"],
+                "NOTION_APPROVALS_DATABASE_ID": databases["approval_queue_database"]["id"],
+                "NOTION_RUN_LOG_DATABASE_ID": databases["run_log_database"]["id"],
+            },
         }
     except Exception as exc:  # noqa: BLE001
         raise NotionServiceError(_notion_error_message(exc)) from exc

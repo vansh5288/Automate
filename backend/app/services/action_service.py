@@ -14,7 +14,7 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-DEV_MODE = not (settings.smtp_host and settings.smtp_username)
+DEV_MODE = settings.demo_mode or not (settings.smtp_host and settings.smtp_username)
 
 
 class ActionError(Exception):

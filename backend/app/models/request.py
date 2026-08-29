@@ -44,6 +44,7 @@ class PurchaseRequest(Base):
 
     notion_page_id = Column(String, default="")
     notion_approval_page_id = Column(String, default="")
+    notion_approval_page_url = Column(String, default="")  # Real Notion URL from API
     approver = Column(String, default="")
 
     external_action_id = Column(String, default="")

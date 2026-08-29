@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -9,6 +10,11 @@ from app.services import procurement_service
 from app.workers.notion_poller import poll_once
 
 router = APIRouter(prefix="/api/requests", tags=["requests"])
+
+
+class LocalDecisionIn(BaseModel):
+    decision: str  # APPROVED | REJECTED
+    approver: str = "Demo Manager"
 
 
 @router.post("", response_model=PurchaseRequestOut)
@@ -30,6 +36,7 @@ def list_requests(db: Session = Depends(get_db)):
             "status": r.status.value,
             "risk_level": r.risk_level,
             "approval_required": bool(r.approval_required),
+            "notion_url": r.notion_approval_page_url or "",
             "created_at": r.created_at.isoformat(),
         }
         for r in reqs
@@ -63,7 +70,7 @@ def get_request(request_id: str, db: Session = Depends(get_db)):
         updated_at=r.updated_at.isoformat(),
         notion_page_id=r.notion_page_id,
         notion_approval_page_id=r.notion_approval_page_id,
-        notion_url=f"https://www.notion.so/{r.notion_approval_page_id.replace('-', '')}" if r.notion_approval_page_id else "",
+        notion_url=r.notion_approval_page_url,  # Return the real stored URL (empty string if not set or in DEV_MODE)
         external_action_id=r.external_action_id,
     )
 
@@ -93,6 +100,26 @@ def get_run_history(request_id: str, db: Session = Depends(get_db)):
         }
         for l in logs
     ]
+
+
+@router.post("/{request_id}/decide", response_model=PurchaseRequestOut)
+def local_decide(request_id: str, payload: LocalDecisionIn, db: Session = Depends(get_db)):
+    """Demo-only: approve/reject locally when Notion is not connected."""
+    from app.services import notion_service
+
+    if not notion_service.DEV_MODE:
+        raise HTTPException(
+            status_code=400,
+            detail="Notion is connected – change approval status in the Notion Approval Queue.",
+        )
+    r = db.query(PurchaseRequest).filter(PurchaseRequest.id == request_id).first()
+    if not r:
+        raise HTTPException(status_code=404, detail="Request not found")
+    if r.status != RequestStatus.PENDING_APPROVAL:
+        raise HTTPException(status_code=400, detail=f"Request in status {r.status.value} cannot be decided")
+    if payload.decision not in ("APPROVED", "REJECTED"):
+        raise HTTPException(status_code=400, detail="decision must be APPROVED or REJECTED")
+    return procurement_service.apply_human_decision(db, r, payload.decision, approver=payload.approver)
 
 
 @router.post("/{request_id}/retry", response_model=PurchaseRequestOut)

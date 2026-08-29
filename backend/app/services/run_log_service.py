@@ -47,7 +47,7 @@ def write_run_log(
     # Mirror into Notion Run Log DB (best-effort - failure here must not
     # crash the workflow, but IS itself logged to the local DB).
     try:
-        notion_service.create_run_log_entry(log)
+        _ = notion_service.create_run_log_entry(log)  # Returns (page_id, page_url), but we don't need to store them
     except Exception as exc:  # noqa: BLE001
         fallback = RunLog(
             run_id=_new_run_id(),

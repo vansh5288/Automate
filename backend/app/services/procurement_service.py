@@ -104,12 +104,14 @@ def _process_request(db: Session, req: PurchaseRequest) -> PurchaseRequestOut:
     db.commit()
     _create_notion_records(db, req, ai_reasoning=decision.reason, force_approval_item=True)
     run_log_service.write_run_log(db, request_id=req.id, event="ROUTED_TO_APPROVAL", status="SUCCESS", reason=decision.reason)
-    return _out(req, "Purchase requires human approval - sent to Notion Approval Queue.")
+    if notion_service.DEV_MODE:
+        return _out(req, "Purchase requires human approval – pending locally (Notion not connected).")
+    return _out(req, "Purchase requires human approval – sent to Notion Approval Queue.")
 
 
 def _create_notion_records(db: Session, req: PurchaseRequest, ai_reasoning: str = "", force_approval_item: bool = False):
     try:
-        page_id = notion_service.create_purchase_request_page(req)
+        page_id, page_url = notion_service.create_purchase_request_page(req)
         req.notion_page_id = page_id
         db.commit()
         run_log_service.write_run_log(db, request_id=req.id, event="NOTION_RECORD_CREATED", status="SUCCESS")
@@ -118,8 +120,9 @@ def _create_notion_records(db: Session, req: PurchaseRequest, ai_reasoning: str 
 
     if force_approval_item or req.approval_required:
         try:
-            approval_page_id = notion_service.create_approval_item(req)
+            approval_page_id, approval_page_url = notion_service.create_approval_item(req)
             req.notion_approval_page_id = approval_page_id
+            req.notion_approval_page_url = approval_page_url  # Store the real URL
             db.commit()
             approval = Approval(request_id=req.id, status="PENDING")
             db.add(approval)
@@ -130,6 +133,9 @@ def _create_notion_records(db: Session, req: PurchaseRequest, ai_reasoning: str 
 
 
 def _auto_process(db: Session, req: PurchaseRequest) -> PurchaseRequestOut:
+    if req.external_action_id:
+        return _out(req, "External action already executed – skipping duplicate.")
+
     req.status = RequestStatus.AUTO_PROCESSED
     db.commit()
     _create_notion_records(db, req)
@@ -160,11 +166,19 @@ def apply_human_decision(db: Session, req: PurchaseRequest, decision: str, appro
     """decision: APPROVED | REJECTED | OVERRIDDEN.
     Called by the Notion polling worker (or a manual retry) once a human
     has acted in the Approval Queue."""
+    if req.status not in (RequestStatus.PENDING_APPROVAL, RequestStatus.NEEDS_REVIEW):
+        return _out(req, f"Decision already applied – request is {req.status.value}.")
+
     approval = (
         db.query(Approval)
         .filter(Approval.request_id == req.id, Approval.status == "PENDING")
         .first()
     )
+
+    if not approval:
+        existing = db.query(Approval).filter(Approval.request_id == req.id).first()
+        if existing and existing.status != "PENDING":
+            return _out(req, "Decision already applied – duplicate poll ignored.")
 
     if approver.strip().lower() == req.employee_email.strip().lower():
         run_log_service.write_run_log(

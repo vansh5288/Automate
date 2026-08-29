@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException
 
+from app.config import get_settings
 from app.services import notion_service
 
 router = APIRouter(prefix="/api/notion", tags=["notion"])
@@ -17,7 +18,8 @@ def validate_notion():
 
 @router.post("/setup")
 def setup_notion():
-    parent_page_id = notion_service.settings.notion_parent_page_id
+    settings = get_settings()
+    parent_page_id = settings.notion_parent_page_id
     if not parent_page_id:
         raise HTTPException(status_code=400, detail="Set NOTION_PARENT_PAGE_ID before running Notion setup.")
     try:

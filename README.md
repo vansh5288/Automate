@@ -55,36 +55,65 @@ See `docs/architecture.md` for the full request lifecycle diagram.
 
 ## Notion Setup
 
-1. Create an integration at https://www.notion.so/my-integrations and copy its secret.
-2. Create (or pick) a parent page in Notion, then **Add connections → your integration** on that page.
-3. Put the integration token in `.env` as `NOTION_TOKEN`, and the parent page ID as `NOTION_PARENT_PAGE_ID`.
-4. Run:
-   ```bash
-   cd backend && pip install -r requirements.txt
-   python ../scripts/setup_notion.py --parent-page-id <page_id>
+ProcureFlow creates a **ProcureFlow Control Center** page in your Notion workspace with three databases:
+
+| Database | Purpose |
+|---|---|
+| **Purchase Requests** | Master record of every request |
+| **Approval Queue** | Human approval control panel for high-risk purchases |
+| **Run Log** | Audit trail of every workflow step |
+
+### Step-by-step setup
+
+1. Create an internal integration at [notion.so/my-integrations](https://www.notion.so/my-integrations) and copy the **Internal Integration Secret**.
+2. In Notion, create a page (e.g. "ProcureFlow Control Center") and use **⋯ → Add connections** to share it with your integration.
+3. Copy the page ID from the URL (the 32-character hex string after the workspace name).
+4. Add to `.env`:
    ```
-5. Copy the three printed database IDs into `.env` (`NOTION_REQUESTS_DATABASE_ID`, `NOTION_APPROVALS_DATABASE_ID`, `NOTION_RUN_LOG_DATABASE_ID`).
+   NOTION_TOKEN=secret_...
+   NOTION_PARENT_PAGE_ID=your_page_id
+   DEMO_MODE=false
+   ```
+5. Run the setup script (creates databases with the correct schema):
+   ```powershell
+   cd backend
+   .\venv\Scripts\python.exe ..\scripts\setup_notion.py --parent-page-id <page_id>
+   ```
+6. Copy the three printed database IDs into `.env`:
+   ```
+   NOTION_REQUESTS_DATABASE_ID=...
+   NOTION_APPROVALS_DATABASE_ID=...
+   NOTION_RUN_LOG_DATABASE_ID=...
+   ```
+7. Restart the backend.
+8. Open **Integrations** in the frontend → **Test Connection / Validate Schema** — you should see **🟢 Notion Connected**.
+9. Submit a high-risk request (e.g. "3 MacBook Pro laptops for engineering").
+10. Confirm it appears in the **Approval Queue** database in Notion.
+11. Click **Open in Notion** on the request detail page — it must open the exact approval row.
+12. Change **Status** from `Pending` to `Approved` or `Rejected` in Notion.
+13. Wait ~15 seconds (background poller) or click **Sync Now** — ProcureFlow processes the decision and updates the Run Log.
 
-### How to connect Notion
+If setup fails with "object not found" or "forbidden", re-share the parent page **and all three databases** with your integration.
 
-1. Create an internal integration at `https://www.notion.so/my-integrations` and copy its secret to `NOTION_TOKEN`.
-2. Create a parent page in the target workspace. Open the page menu, choose **Add connections**, and select the ProcureFlow integration.
-3. Set `NOTION_PARENT_PAGE_ID` in `.env` (or pass `--parent-page-id` to the setup command).
-4. From the repository root, run the setup command below. It loads `.env`, verifies the token, and creates the three databases with the schema used by the backend.
-5. Copy the three printed database IDs into `.env`, then restart the backend.
-6. Open **Integrations** in the frontend and use **Test Connection / Validate Schema**.
-7. Submit a high-value request, open its Approval Queue item in Notion, change `Status` from `Pending` to `Approved` or `Rejected`, and wait for the poller (or use **Sync Now**).
+### Without Notion configured
 
-PowerShell setup command:
+The app runs in **🟡 Demo / Local Mode**:
 
-```powershell
-cd backend
-.\venv\Scripts\python.exe ..\scripts\setup_notion.py --parent-page-id <page_id>
-```
+- No fake Notion URLs are shown
+- High-risk requests show **Approve (Demo)** / **Reject (Demo)** buttons on the request detail page
+- Run logs are stored locally in SQLite only
 
-If the integration is configured but cannot access Notion, the diagnostics endpoint reports the corrective action. Share the parent page and all created databases with the integration; do not remove the token to hide a permission failure.
+### DEMO_MODE
 
-Without these set, the backend runs in Notion **DEV_MODE**: it logs what it would have written instead of calling the API, so you can still develop and test the rest of the pipeline. Details in `docs/hackathon-compliance.md`.
+`DEMO_MODE=true` in `.env` simulates **external procurement actions** (email) without requiring SMTP. It does **not** disable Notion when `NOTION_TOKEN` and database IDs are configured.
+
+| Component | DEMO_MODE=false | DEMO_MODE=true |
+|---|---|---|
+| Notion approvals | Real (if configured) | Real (if configured) |
+| Procurement email | Real (if SMTP configured) | Simulated (`dev-email-*` ID logged) |
+| "Open in Notion" link | Shown only when real URL exists | Same — never faked |
+
+Without Notion credentials, the system is always in local demo mode regardless of `DEMO_MODE`.
 
 ## Environment Variables
 
@@ -99,7 +128,7 @@ cp .env.example .env
 ```bash
 # Backend
 cd backend
-python -m venv venv && source venv/bin/activate
+py -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 
 # Frontend
@@ -163,6 +192,7 @@ Interactive docs at `/docs` (Swagger) once the backend is running. Core endpoint
 | GET | `/api/requests` | List all requests |
 | GET | `/api/requests/{id}` | Full detail for one request |
 | GET | `/api/requests/{id}/runs` | Run Log history for one request |
+| POST | `/api/requests/{id}/decide` | Demo-only local approve/reject when Notion is not connected |
 | POST | `/api/requests/{id}/retry` | Re-run processing after a failure |
 | POST | `/api/requests/{id}/sync` | Poll Notion and synchronize one request |
 | POST | `/api/webhooks/purchase-request` | Webhook trigger (same pipeline as above) |
